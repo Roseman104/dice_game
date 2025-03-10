@@ -1,5 +1,23 @@
 use rand::Rng;
 
+
+// Enum to classify roll type
+#[derive(Debug)]
+enum RollType {
+    Interesting,
+    Boring,
+}
+
+// Struct to track stats
+#[derive(Default)]
+struct RollStats {
+    interesting: u32,
+    boring: u32,
+}
+
+
+
+
 // Roll one die
 fn roll_dice() -> u8 {
     let mut rng = rand::thread_rng();
@@ -137,8 +155,67 @@ fn probability_of_scoring(remaining_dice: u8) -> f64 {
     1.0 - prob_no_score
 }
 
-// Player's turn function, returns points scored in this turn
-fn player_turn(player_name: &str, own_score: u32, opponent_score: u32, winning_score: u32) -> u32 {
+// Function to classify a dice roll
+fn classify_roll(counts: &[u8; 7], remaining_dice: u8) -> RollType {
+    // Check for "interesting" combinations
+    let mut pair_count = 0;
+    let mut triplet_count = 0;
+
+    // Check for straight (1-6)
+    if (1..=6).all(|num| counts[num] == 1) {
+        return RollType::Interesting;
+    }
+
+    // Check for three pairs
+    for num in 1..=6 {
+        if counts[num] == 2 {
+            pair_count += 1;
+        }
+    }
+    if pair_count == 3 {
+        return RollType::Interesting;
+    }
+
+    // Check for two triplets
+    for num in 1..=6 {
+        if counts[num] == 3 {
+            triplet_count += 1;
+        }
+    }
+    if triplet_count == 2 {
+        return RollType::Interesting;
+    }
+
+    // Check for four, five, six of a kind
+    for num in 1..=6 {
+        if counts[num] >= 4 {
+            return RollType::Interesting;
+        }
+    }
+
+    // Check for regular triples (excluding single 1s and 5s)
+    for num in 1..=6 {
+        if counts[num] == 3 {
+            return RollType::Interesting;
+        }
+    }
+
+    // Check for "hot dice" (used all dice in scoring)
+    if remaining_dice == 0 {
+        return RollType::Interesting;
+    }
+
+    // Otherwise, only scoring 1's or 5's
+    RollType::Boring
+}
+
+fn player_turn(
+    player_name: &str,
+    own_score: u32,
+    opponent_score: u32,
+    winning_score: u32,
+    stats: &mut RollStats,
+) -> u32 {
     let mut total_turn_score = 0;
     let mut remaining_dice = 6;
 
@@ -153,11 +230,27 @@ fn player_turn(player_name: &str, own_score: u32, opponent_score: u32, winning_s
 
         println!("{} rolled: {:?}", player_name, rolls);
 
-        // Count dice
-        let mut counts = count_dice(&rolls);
+        // Count dice (original roll)
+        let counts = count_dice(&rolls);
+        
+        // Now pass mutable copy for scoring
+        let mut counts_for_scoring = counts;
 
-        // Score dice and explain what was scored
-        let (score, dice_used) = score_dice_verbose(&mut counts);
+        let (score, dice_used) = score_dice_verbose(&mut counts_for_scoring);
+
+        // ✅ Classify roll BEFORE modifying counts for scoring
+        let roll_type = classify_roll(&counts, remaining_dice);
+        match roll_type {
+            RollType::Interesting => {
+                println!("✨ This was an **interesting** roll!");
+                stats.interesting += 1;
+            }
+            RollType::Boring => {
+                println!("😐 This was a **boring** roll.");
+                stats.boring += 1;
+            }
+        }
+
 
         if score == 0 {
             println!("💥 No scoring dice! {} loses all points for this turn.", player_name);
@@ -187,31 +280,50 @@ fn player_turn(player_name: &str, own_score: u32, opponent_score: u32, winning_s
             prob_score * 100.0
         );
 
-        // Check if opponent is close to winning and player is far behind
+        // Check strategic conditions:
         let opponent_close = opponent_score >= winning_score - 400;
         let player_far_behind = opponent_score >= own_score + 900;
+        let player_well_ahead = own_score >= opponent_score + 900;
+        let player_safe_zone = own_score >= winning_score / 4;
 
+        // ✅ If player is far behind and opponent is close to winning: take risks!
         if opponent_close && player_far_behind {
             println!(
                 "⚔️ {} is far behind and opponent is near winning — taking risks!",
                 player_name
             );
-            // In this mode, we ignore banking at 400 and always roll (unless bust)
-        } else if remaining_dice == 6 {
-            println!("🔥 {} has hot dice and chooses to roll again!", player_name);
-            continue; // Roll again because of hot dice
-        } else if total_turn_score >= 400 {
+            // Risk mode: ignore banking unless hot dice
+        } 
+        // ✅ If player is well ahead and in safe zone, play cautiously
+        else if player_well_ahead && player_safe_zone {
+            println!(
+                "🛡️ {} is ahead by a comfortable margin and will play safely.",
+                player_name
+            );
+            // If any points scored, bank them immediately to stay ahead
             println!("🏦 {} decides to bank the points: {}", player_name, total_turn_score);
             break;
-        } else {
+        }
+        // ✅ Always reroll hot dice
+        else if remaining_dice == 6 {
+            println!("🔥 {} has hot dice and chooses to roll again!", player_name);
+            continue; // Roll again because of hot dice
+        }
+        // ✅ Normal bank if 400+ points
+        else if total_turn_score >= 400 {
+            println!("🏦 {} decides to bank the points: {}", player_name, total_turn_score);
+            break;
+        }
+        // ✅ Otherwise, continue rolling to build points
+        else {
             println!("➕ {} decides to roll again!", player_name);
         }
-
-        // In "desperate mode", we don't bank even if 400+ unless hot dice are used up
     }
 
     total_turn_score
 }
+
+
 
 
 
@@ -221,13 +333,16 @@ fn main() {
     let winning_score = 4000;
     let mut turn = 1;
 
-    println!("🎲 Welcome to the Dice Game! First to {} points wins! 🎲", winning_score);
+    // Initialize stats tracker
+    let mut stats = RollStats::default();
+
+    println!("🎲 Welcome to Farkle or 'the Dice Game'! First to {} points wins! 🎲", winning_score);
 
     loop {
         println!("\n========== Turn {} ==========", turn);
 
         // Player 1's turn
-        let p1_points = player_turn("Player 1", player1_score, player2_score, winning_score);
+        let p1_points = player_turn("Player 1", player1_score, player2_score, winning_score, &mut stats);
         player1_score += p1_points;
         println!("💰 Player 1 total score: {}", player1_score);
 
@@ -239,7 +354,7 @@ fn main() {
         }
 
         // Player 2's turn
-        let p2_points = player_turn("Player 2", player2_score, player1_score, winning_score);
+        let p2_points = player_turn("Player 2", player2_score, player1_score, winning_score, &mut stats);
         player2_score += p2_points;
         println!("💰 Player 2 total score: {}", player2_score);
 
@@ -256,5 +371,10 @@ fn main() {
         turn += 1;
     }
 
+    // Show roll stats at the end
     println!("\n🎉 Game Over! Thanks for playing! 🎉");
+    println!("\n📊 Roll Statistics:");
+    println!("Interesting rolls: {}", stats.interesting);
+    println!("Boring rolls: {}", stats.boring);
 }
+
