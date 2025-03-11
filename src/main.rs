@@ -1,4 +1,13 @@
 use rand::Rng;
+use uuid::Uuid;
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug)]
+struct Player {
+    name: String,
+    score: u32,
+}
+
 
 
 // Enum to classify roll type
@@ -15,7 +24,27 @@ struct RollStats {
     boring: u32,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct GameResult {
+    game_id: Uuid,
+    player1_score: u32,
+    player2_score: u32,
+    winner: String,
+    interesting_rolls: u32,
+    boring_rolls: u32,
+    turns: Vec<TurnResult>, // Collect all turns
+}
 
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TurnResult {
+    turn_id: Uuid,
+    turn_number: u32,
+    player: String,
+    points_scored: u32,
+    interesting: bool,
+    rolls: Vec<Vec<u8>>, // Sequence of rolls
+}
 
 
 // Roll one die
@@ -210,16 +239,20 @@ fn classify_roll(counts: &[u8; 7], remaining_dice: u8) -> RollType {
 }
 
 fn player_turn(
+    game_id: Uuid,
+    turn_number: u32,
     player_name: &str,
     own_score: u32,
     opponent_score: u32,
     winning_score: u32,
     stats: &mut RollStats,
-) -> u32 {
+) -> TurnResult {
     let mut total_turn_score = 0;
     let mut remaining_dice = 6;
+    let mut rolls_history: Vec<Vec<u8>> = Vec::new(); // ✅ Explicit type for roll history
+    let turn_id = Uuid::new_v4(); // Unique Turn ID
 
-    println!("\n{}'s turn begins!", player_name);
+    println!("\n{}'s turn begins (Game ID: {}, Turn ID: {})", player_name, game_id, turn_id);
 
     loop {
         // Roll dice
@@ -230,16 +263,18 @@ fn player_turn(
 
         println!("{} rolled: {:?}", player_name, rolls);
 
+        rolls_history.push(rolls.clone()); // ✅ Save the current roll into history
+
         // Count dice (original roll)
         let counts = count_dice(&rolls);
-        
+
         // Now pass mutable copy for scoring
         let mut counts_for_scoring = counts;
 
         let (score, dice_used) = score_dice_verbose(&mut counts_for_scoring);
 
         // ✅ Classify roll BEFORE modifying counts for scoring
-        let roll_type = classify_roll(&counts, remaining_dice);
+        let roll_type = classify_roll(&counts, dice_used); // ✅ Now passing 3 parameters as expected
         match roll_type {
             RollType::Interesting => {
                 println!("✨ This was an **interesting** roll!");
@@ -251,10 +286,9 @@ fn player_turn(
             }
         }
 
-
         if score == 0 {
             println!("💥 No scoring dice! {} loses all points for this turn.", player_name);
-            return 0; // Bust, return zero points
+            break; // Bust, end turn with zero points
         }
 
         println!("Points scored this roll: {}", score);
@@ -262,6 +296,15 @@ fn player_turn(
 
         // Update turn score
         total_turn_score += score;
+
+        // Calculate points needed to win
+        let points_needed_to_win = if own_score + total_turn_score >= winning_score {
+            0
+        } else {
+            winning_score - (own_score + total_turn_score)
+        };
+
+        println!("🏁 {} needs {} more points to win.", player_name, points_needed_to_win);
 
         // Remaining dice calculation
         remaining_dice -= dice_used;
@@ -293,16 +336,25 @@ fn player_turn(
                 player_name
             );
             // Risk mode: ignore banking unless hot dice
-        } 
+        }
         // ✅ If player is well ahead and in safe zone, play cautiously
         else if player_well_ahead && player_safe_zone {
             println!(
                 "🛡️ {} is ahead by a comfortable margin and will play safely.",
                 player_name
             );
-            // If any points scored, bank them immediately to stay ahead
             println!("🏦 {} decides to bank the points: {}", player_name, total_turn_score);
             break;
+        }
+        // ✅ If close to winning (e.g., need < 500 to win), play safe and bank what you get
+        else if points_needed_to_win <= 500 {
+            println!(
+                "🏁 {} is close to winning and decides to bank the points to get closer to the goal.",
+                player_name
+            );
+            println!("🏦 {} banks {} points.", player_name, total_turn_score);
+            break
+              ;
         }
         // ✅ Always reroll hot dice
         else if remaining_dice == 6 {
@@ -320,21 +372,35 @@ fn player_turn(
         }
     }
 
-    total_turn_score
+    TurnResult {
+        turn_id,
+        turn_number,
+        player: player_name.to_string(),
+        points_scored: total_turn_score,
+        interesting: total_turn_score > 0, // or any condition you define
+        rolls: rolls_history,
+    }
 }
 
 
 
 
 
+
+
 fn main() {
-    let mut player1_score = 0;
-    let mut player2_score = 0;
+    let mut player1 = Player { name: "Player 1".to_string(), score: 0 };
+    let mut player2 = Player { name: "Player 2".to_string(), score: 0 };
     let winning_score = 4000;
     let mut turn = 1;
+    let mut turns: Vec<TurnResult> = Vec::new(); // To collect all turns
+    let mut turn_counter = 1;
 
     // Initialize stats tracker
     let mut stats = RollStats::default();
+
+    let game_id = Uuid::new_v4();
+    println!("🎮 Starting game with ID: {}", game_id);
 
     println!("🎲 Welcome to Farkle or 'the Dice Game'! First to {} points wins! 🎲", winning_score);
 
@@ -342,32 +408,53 @@ fn main() {
         println!("\n========== Turn {} ==========", turn);
 
         // Player 1's turn
-        let p1_points = player_turn("Player 1", player1_score, player2_score, winning_score, &mut stats);
-        player1_score += p1_points;
-        println!("💰 Player 1 total score: {}", player1_score);
+        let p1_turn = player_turn(
+            game_id,
+            turn_counter,
+            &player1.name,
+            player1.score,
+            player2.score,
+            winning_score,
+            &mut stats,
+        );
+        player1.score += p1_turn.points_scored; // ✅ Access the points inside TurnResult
+        turns.push(p1_turn);
+
+        println!("💰 {} total score: {}", player1.name, player1.score);
 
         // Check if Player 1 has won
-        if player1_score >= winning_score {
-            println!("\n🏆 Player 1 WINS with {} points! 🏆", player1_score);
-            println!("\n\t Player 2 Final score: {} points", player2_score);
+        if player1.score >= winning_score {
+            println!("\n🏆 {} WINS with {} points! 🏆", player1.name, player1.score);
+            println!("\n\t {} Final score: {} points", player2.name, player2.score);
             break;
         }
 
         // Player 2's turn
-        let p2_points = player_turn("Player 2", player2_score, player1_score, winning_score, &mut stats);
-        player2_score += p2_points;
-        println!("💰 Player 2 total score: {}", player2_score);
+        let p2_turn = player_turn(
+            game_id,
+            turn_counter,
+            &player2.name,
+            player2.score,
+            player1.score,
+            winning_score,
+            &mut stats,
+        );
+        player2.score += p2_turn.points_scored; // ✅ Access the points inside TurnResult
+        turns.push(p2_turn);
+
+        println!("💰 {} total score: {}", player2.name, player2.score);
 
         // Check if Player 2 has won
-        if player2_score >= winning_score {
-            println!("\n🏆 Player 2 WINS with {} points! 🏆", player2_score);
-            println!("\n\t Player 1 Final score: {} points", player1_score);
+        if player2.score >= winning_score {
+            println!("\n🏆 {} WINS with {} points! 🏆", player2.name, player2.score);
+            println!("\n\t {} Final score: {} points", player1.name, player1.score);
             break;
         }
 
         // Print both scores after each full round
-        println!("Scores => Player 1: {} | Player 2: {}", player1_score, player2_score);
+        println!("Scores => {}: {} | {}: {}", player1.name, player1.score, player2.name, player2.score);
 
+        turn_counter += 1; // ✅ Increment turn counter only after both players' turns
         turn += 1;
     }
 
@@ -376,5 +463,13 @@ fn main() {
     println!("\n📊 Roll Statistics:");
     println!("Interesting rolls: {}", stats.interesting);
     println!("Boring rolls: {}", stats.boring);
+
+    println!("\n 🎮 Ending game: {}\n", game_id);
+
+    // Optionally: Print all turns for review
+    println!("\nTurn Results:");
+    for t in turns {
+        println!("{:?}", t);
+    }
 }
 
